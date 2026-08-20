@@ -1,0 +1,42 @@
+name: build
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Set up Go
+      uses: actions/setup-go@v3
+      with:
+        go-version: 1.18
+
+    - name: Build
+      run: go build -v ./...
+
+    - name: Generate Certificates
+      run: |
+        cd certs
+        ./gen.sh
+
+    - name: Test LRU Cache
+      run: go test -v ./lru
+      env:
+        GODEBUG: x509sha1=1
+
+    - name: Test Consistent Hashing Ring
+      run: go test -v ./ring
+      env:
+        GODEBUG: x509sha1=1
+
+    - name: Integration Tests
+      run: go test -v
+      env:
+        GODEBUG: x509sha1=1

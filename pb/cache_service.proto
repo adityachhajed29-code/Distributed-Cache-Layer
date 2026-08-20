@@ -1,0 +1,92 @@
+
+syntax = "proto3";
+option go_package = "./";
+import "google/protobuf/empty.proto";
+package pb;
+
+// get/put messages
+message GetRequest {
+  string key = 1;
+}
+
+message GetResponse {
+  string data = 1;
+}
+
+message PutRequest {
+  string key = 1;
+  string value = 2;
+}
+
+// election messages
+message ElectionRequest {
+  int32 caller_pid = 1;
+  string caller_node_id = 2;
+}
+
+message PidRequest {
+  int32 caller_pid = 1;
+}
+
+message PidResponse {
+  int32 pid = 1;
+}
+
+message HeartbeatRequest {
+  string caller_node_id = 1;
+}
+
+message HeartbeatResponse {
+  string node_id = 1;
+  string status = 2;
+}
+
+message LeaderRequest {
+  string caller = 1;
+}
+
+message LeaderResponse {
+  string id = 1;
+}
+
+message NewLeaderAnnouncement {
+  string leader_id = 1;
+}
+
+// cluster config messages
+message Node {
+  string id = 1;
+  string host = 2;
+  int32 rest_port = 3;
+  int32 grpc_port = 4;
+}
+
+message ClusterConfigRequest {
+  string caller_node_id = 1;
+}
+
+message ClusterConfig {
+  repeated Node nodes = 1;
+}
+
+message GenericResponse {
+  string data = 1;
+}
+
+service CacheService {
+  // Get/Put operations
+  rpc Get(GetRequest) returns (GetResponse);
+  rpc Put(PutRequest) returns (google.protobuf.Empty);
+
+  // Elections
+  rpc GetPid(PidRequest) returns (PidResponse);
+  rpc GetLeader(LeaderRequest) returns (LeaderResponse);
+  rpc GetHeartbeat(HeartbeatRequest) returns (google.protobuf.Empty);
+  rpc UpdateLeader(NewLeaderAnnouncement) returns (GenericResponse);
+  rpc RequestElection(ElectionRequest) returns (GenericResponse);
+
+  // Cluster management
+  rpc GetClusterConfig(ClusterConfigRequest) returns (ClusterConfig);
+  rpc UpdateClusterConfig(ClusterConfig) returns (google.protobuf.Empty);
+  rpc RegisterNodeWithCluster(Node) returns (GenericResponse);
+}
