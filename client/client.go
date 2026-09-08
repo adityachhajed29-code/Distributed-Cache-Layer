@@ -10,6 +10,8 @@ import (
 	"fmt"
 	"io/ioutil"
 	"net/http"
+	"net/url"
+	"sync"
 	"time"
 
 	nodelib "github.com/malwaredllc/minicache/node"
@@ -28,6 +30,7 @@ type Payload struct {
 
 // Client wrapper for interacting with Identity Server
 type ClientWrapper struct {
+	mu      sync.Mutex
 	Config  nodelib.NodesConfig
 	Ring    *ring.Ring
 	Logger  *zap.SugaredLogger
@@ -48,7 +51,7 @@ func NewClientWrapper(certDir string, configFile string, insecure bool, verbose 
 	)
 
 	// set up consistent hashing ring and create grpc clients to active nodes
-	ring := ring.NewRing()
+	ring := ring.NewVirtualRing()
 	var clusterConfig []*pb.Node
 
 	for _, node := range initNodesConfig.Nodes {
@@ -138,12 +141,14 @@ func NewCacheClient(cert_dir string, server_host string, server_port int, enable
 
 // Get item from cache. Hash the key to find which node has the value stored.
 func (c *ClientWrapper) Get(key string) (string, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	// find node which contains the item
 	nodeId := c.Ring.Get(key)
 	nodeInfo := c.Config.Nodes[nodeId]
 
 	// make request
-	resp, err := http.Get(fmt.Sprintf("http://%s:%d/get", nodeInfo.Host, nodeInfo.RestPort))
+	resp, err := (&http.Client{Timeout: 3 * time.Second}).Get(fmt.Sprintf("http://%s:%d/get/%s", nodeInfo.Host, nodeInfo.RestPort, url.PathEscape(key)))
 
 	if err != nil {
 		return "", errors.New(fmt.Sprintf("error sending GET request: %s", err))
@@ -162,6 +167,8 @@ func (c *ClientWrapper) Get(key string) (string, error) {
 
 // Put key-value pair into cache. Hash the key to find which node to store it in.
 func (c *ClientWrapper) Put(key string, value string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	// find node to put the item
 	nodeId := c.Ring.Get(key)
 	nodeInfo := c.Config.Nodes[nodeId]
@@ -179,7 +186,7 @@ func (c *ClientWrapper) Put(key string, value string) error {
 	}
 
 	// check response
-	res, err := new(http.Client).Do(req)
+	res, err := (&http.Client{Timeout: 3 * time.Second}).Do(req)
 
 	if err != nil {
 		return errors.New(fmt.Sprintf("error sending POST request: %s", err))
@@ -191,6 +198,8 @@ func (c *ClientWrapper) Put(key string, value string) error {
 }
 
 func (c *ClientWrapper) GetGrpc(key string) (string, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	// find node which contains the item
 	nodeId := c.Ring.Get(key)
 	nodeInfo := c.Config.Nodes[nodeId]
@@ -217,6 +226,8 @@ func (c *ClientWrapper) GetGrpc(key string) (string, error) {
 }
 
 func (c *ClientWrapper) PutGrpc(key string, value string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	// find node which contains the item
 	nodeId := c.Ring.Get(key)
 	nodeInfo := c.Config.Nodes[nodeId]
@@ -318,18 +329,21 @@ func (c *ClientWrapper) StartClusterConfigWatcher(shutdownChan <-chan bool) {
 }
 
 func (c *ClientWrapper) fetchClusterConfig() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	// ask random nodes who the leader until we get a response.
 	// we want each client to ask random nodes, not fixed, to avoid overloading one with leader requests
 	var leader *nodelib.Node
 	attempted := make(map[string]bool)
 	for {
-		randnode := nodelib.GetRandomNode(c.Ring.Nodes)
 
 		// if all nodes are unavailable, throw error
 		if len(attempted) == len(c.Ring.Nodes) {
-			c.Logger.Fatalf("error: unable to connect to any nodes")
+			c.Logger.Errorf("unable to connect to any nodes")
+			return
 		}
 
+		randnode := nodelib.GetRandomNode(c.Ring.Nodes)
 		// skip attempted nodes
 		if _, ok := attempted[randnode.Id]; ok {
 			c.Logger.Infof("Skipping visited node %s...", randnode.Id)
