@@ -69,11 +69,15 @@ func main() {
 		grpcServer.Stop()
 
 		cacheServer.LogInfoLevel("Shutting down HTTP server...")
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
 		defer cancel()
 
 		if err := httpServer.Shutdown(ctx); err != nil {
 			cacheServer.LogInfoLevel(fmt.Sprintf("Http server shutdown error: %s", err))
+		}
+		if err := cacheServer.Close(ctx); err != nil {
+			cacheServer.LogInfoLevel(err.Error())
+			os.Exit(1)
 		}
 		os.Exit(0)
 	}()

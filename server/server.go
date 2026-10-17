@@ -23,6 +23,8 @@ import (
 	"github.com/malwaredllc/minicache/lru"
 	"github.com/malwaredllc/minicache/node"
 	"github.com/malwaredllc/minicache/pb"
+	"github.com/malwaredllc/minicache/pkg/invalidation"
+	"github.com/malwaredllc/minicache/pkg/storage"
 	"go.uber.org/zap"
 
 	"sync"
@@ -37,6 +39,9 @@ const (
 )
 
 type CacheServer struct {
+	stateMu        sync.RWMutex
+	engine         *invalidation.Engine
+	database       *storage.DB
 	router         *gin.Engine
 	cache          *lru.LruCache
 	logger         *zap.SugaredLogger
@@ -124,6 +129,27 @@ func NewCacheServer(capacity int, configFile string, verbose bool, nodeID string
 		decisionChan: make(chan string, 1),
 	}
 
+	if dsn := os.Getenv("DATABASE_URL"); dsn != "" {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		db, err := storage.Open(ctx, dsn)
+		cancel()
+		if err != nil {
+			panic(err)
+		}
+		policy := os.Getenv("WRITE_POLICY")
+		if policy == "" {
+			policy = "write-through"
+		}
+		engine, err := invalidation.New(db, capacity, 30*time.Second, policy, finalNodeID)
+		if err != nil {
+			db.Close()
+			panic(err)
+		}
+		cacheServer.engine = engine
+		cacheServer.database = db
+		cacheServer.router.Any("/v1/cache/*key", gin.WrapF(engine.Handler))
+	}
+	cacheServer.router.GET("/health", func(c *gin.Context) { c.Status(http.StatusOK) })
 	cacheServer.router.GET("/get/:key", cacheServer.GetHandler)
 	cacheServer.router.POST("/put", cacheServer.PutHandler)
 	var grpcServer *grpc.Server
@@ -149,32 +175,46 @@ func NewCacheServer(capacity int, configFile string, verbose bool, nodeID string
 // GET /get/:key
 // REST API endpoint to get value for key from the LRU cache
 func (s *CacheServer) GetHandler(c *gin.Context) {
-	result := make(chan gin.H)
-	go func(ctx *gin.Context) {
-		value, err := s.cache.Get(c.Param("key"))
-		if err != nil {
-			result <- gin.H{"message": "key not found"}
-		} else {
-			result <- gin.H{"value": value}
-		}
-	}(c.Copy())
-	c.IndentedJSON(http.StatusOK, <-result)
+	value, err := s.read(c.Request.Context(), c.Param("key"))
+	if err != nil {
+		c.JSON(404, gin.H{"message": "key not found"})
+		return
+	}
+	c.JSON(200, gin.H{"value": value})
 }
 
-// POST /put (Body: {"key": "1", "value": "2"})
-// REST API endpoint to put a new key-value pair in the LRU cache
 func (s *CacheServer) PutHandler(c *gin.Context) {
-	result := make(chan gin.H)
-	go func(ctx *gin.Context) {
-		var newPair Pair
-		if err := c.BindJSON(&newPair); err != nil {
-			s.logger.Errorf("unable to deserialize key-value pair from json")
-			return
-		}
-		s.cache.Put(newPair.Key, newPair.Value)
-		result <- gin.H{"key": newPair.Key, "value": newPair.Value}
-	}(c.Copy())
-	c.IndentedJSON(http.StatusCreated, <-result)
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 710000)
+	var pair Pair
+	if err := c.ShouldBindJSON(&pair); err != nil {
+		c.JSON(400, gin.H{"message": "invalid payload"})
+		return
+	}
+	if len(pair.Key) == 0 || len(pair.Key) > 250 || len(pair.Value) > 512*1024 {
+		c.Status(413)
+		return
+	}
+	if err := s.write(c.Request.Context(), pair.Key, pair.Value); err != nil {
+		c.Status(503)
+		return
+	}
+	c.JSON(201, pair)
+}
+
+func (s *CacheServer) read(ctx context.Context, key string) (string, error) {
+	if s.engine != nil {
+		g, err := s.engine.Get(ctx, key)
+		return string(g.Val), err
+	}
+	return s.cache.Get(key)
+}
+func (s *CacheServer) write(ctx context.Context, key, value string) error {
+	if s.engine != nil {
+		_, err := s.engine.Write(ctx, storage.Record{Key: key, Val: []byte(value)}, 0)
+		return err
+	}
+	s.cache.Put(key, value)
+	return nil
 }
 
 func (s *CacheServer) RunAndReturnHTTPServer(port int) *http.Server {
@@ -210,7 +250,7 @@ func (s *CacheServer) RunAndReturnHTTPServer(port int) *http.Server {
 
 // gRPC handler for getting item from cache. Any replica in the group can serve read requests.
 func (s *CacheServer) Get(ctx context.Context, req *pb.GetRequest) (*pb.GetResponse, error) {
-	value, err := s.cache.Get(req.Key)
+	value, err := s.read(ctx, req.Key)
 	if err != nil {
 		return &pb.GetResponse{Data: "key not found"}, nil
 	}
@@ -219,7 +259,9 @@ func (s *CacheServer) Get(ctx context.Context, req *pb.GetRequest) (*pb.GetRespo
 
 // gRPC handler for putting item in cache.
 func (s *CacheServer) Put(ctx context.Context, req *pb.PutRequest) (*empty.Empty, error) {
-	s.cache.Put(req.Key, req.Value)
+	if err := s.write(ctx, req.Key, req.Value); err != nil {
+		return nil, err
+	}
 	return &empty.Empty{}, nil
 }
 
@@ -272,10 +314,10 @@ func (s *CacheServer) NewCacheClient(serverHost string, serverPort int) (pb.Cach
 // opposed to the gRPC handler to register node, which is what receives the RPC sent by this function).
 func (s *CacheServer) RegisterNodeInternal() {
 	s.logger.Infof("attempting to register %s with cluster", s.nodeID)
-	localNode, _ := s.nodesConfig.Nodes[s.nodeID]
+	localNode, _ := s.nodeSnapshot()[s.nodeID]
 
 	// try to register with each node until one returns a successful response
-	for _, node := range s.nodesConfig.Nodes {
+	for _, node := range s.nodeSnapshot() {
 		// skip self
 		if node.Id == s.nodeID {
 			continue
@@ -462,4 +504,14 @@ func NewGrpcClientForNode(node *node.Node, clientAuth bool, httpsEnabled bool) p
 
 	// new identity service client
 	return pb.NewCacheServiceClient(conn)
+}
+
+func (s *CacheServer) Close(ctx context.Context) error {
+	if s.engine == nil {
+		return nil
+	}
+	if err := s.engine.Close(ctx); err != nil {
+		return err
+	}
+	return s.database.Close()
 }

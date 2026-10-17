@@ -15,20 +15,23 @@ import (
 // New nodes call this RPC on the leader when they come online.
 func (s *CacheServer) RegisterNodeWithCluster(ctx context.Context, nodeInfo *pb.Node) (*pb.GenericResponse, error) {
 	// if we already have this node registered, return
+	s.stateMu.Lock()
 	if _, ok := s.nodesConfig.Nodes[nodeInfo.Id]; ok {
+		s.stateMu.Unlock()
 		s.logger.Infof("Node %s already part of cluster", nodeInfo.Id)
 		return &pb.GenericResponse{Data: SUCCESS}, nil
 	}
 
 	// add node to hashmap config for easy lookup
 	s.nodesConfig.Nodes[nodeInfo.Id] = node.NewNode(nodeInfo.Id, nodeInfo.Host, nodeInfo.RestPort, nodeInfo.GrpcPort)
+	s.stateMu.Unlock()
 
 	// send update to other nodes in cluster
 	var nodes []*pb.Node
-	for _, node := range s.nodesConfig.Nodes {
+	for _, node := range s.nodeSnapshot() {
 		nodes = append(nodes, &pb.Node{Id: node.Id, Host: node.Host, RestPort: node.RestPort, GrpcPort: node.GrpcPort})
 	}
-	for _, node := range s.nodesConfig.Nodes {
+	for _, node := range s.nodeSnapshot() {
 		// skip self
 		if node.Id == s.nodeID {
 			continue
@@ -54,7 +57,7 @@ func (s *CacheServer) RegisterNodeWithCluster(ctx context.Context, nodeInfo *pb.
 // gRPC handler for getting cluster config
 func (s *CacheServer) GetClusterConfig(ctx context.Context, req *pb.ClusterConfigRequest) (*pb.ClusterConfig, error) {
 	var nodes []*pb.Node
-	for _, node := range s.nodesConfig.Nodes {
+	for _, node := range s.nodeSnapshot() {
 		nodes = append(nodes, &pb.Node{Id: node.Id, Host: node.Host, RestPort: node.RestPort, GrpcPort: node.GrpcPort})
 	}
 	s.logger.Infof("Returning cluster config to node %s: %v", req.CallerNodeId, nodes)
@@ -64,6 +67,8 @@ func (s *CacheServer) GetClusterConfig(ctx context.Context, req *pb.ClusterConfi
 // gRPC handler for updating cluster config with incoming info
 func (s *CacheServer) UpdateClusterConfig(ctx context.Context, req *pb.ClusterConfig) (*empty.Empty, error) {
 	s.logger.Info("Updating cluster config")
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
 	s.nodesConfig.Nodes = make(map[string]*node.Node)
 	for _, nodecfg := range req.Nodes {
 		s.nodesConfig.Nodes[nodecfg.Id] = node.NewNode(nodecfg.Id, nodecfg.Host, nodecfg.RestPort, nodecfg.GrpcPort)
@@ -77,10 +82,10 @@ func (s *CacheServer) updateClusterConfigInternal() {
 
 	// send update to other nodes in cluster
 	var nodes []*pb.Node
-	for _, node := range s.nodesConfig.Nodes {
+	for _, node := range s.nodeSnapshot() {
 		nodes = append(nodes, &pb.Node{Id: node.Id, Host: node.Host, RestPort: node.RestPort, GrpcPort: node.GrpcPort})
 	}
-	for _, node := range s.nodesConfig.Nodes {
+	for _, node := range s.nodeSnapshot() {
 		// skip self
 		if node.Id == s.nodeID {
 			continue

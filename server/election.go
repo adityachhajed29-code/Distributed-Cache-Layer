@@ -19,6 +19,7 @@ func (s *CacheServer) RunElection() {
 	// an individual node should run a single election process, not multiple concurrent ones
 	s.electionLock.Lock()
 	if s.electionStatus == ELECTION_RUNNING {
+		s.electionLock.Unlock()
 		s.logger.Info("Election already running, waiting for completion...")
 		return
 	}
@@ -31,7 +32,7 @@ func (s *CacheServer) RunElection() {
 	localPID := int32(os.Getpid())
 	s.logger.Infof("Running election. Local PID: %d", localPID)
 
-	for _, node := range s.nodesConfig.Nodes {
+	for _, node := range s.nodeSnapshot() {
 		// skip self
 		if node.Id == s.nodeID {
 			continue
@@ -76,8 +77,8 @@ func (s *CacheServer) RunElection() {
 			select {
 			case winner := <-s.decisionChan:
 				if winner != "" {
-					s.leaderID = winner
-					s.logger.Infof("Received decision: Leader is node %s", s.leaderID)
+					s.setLeader(winner)
+					s.logger.Infof("Received decision: Leader is node %s", s.currentLeader())
 
 					s.electionLock.Lock()
 					s.electionStatus = NO_ELECTION_RUNNING
@@ -86,8 +87,6 @@ func (s *CacheServer) RunElection() {
 				}
 			case <-time.After(5 * time.Second):
 				s.logger.Info("Timed out waiting for decision. Starting new election.")
-				s.RunElection()
-
 				s.electionLock.Lock()
 				s.electionStatus = NO_ELECTION_RUNNING
 				s.electionLock.Unlock()
@@ -96,11 +95,11 @@ func (s *CacheServer) RunElection() {
 		}
 	}
 	// if no other nodes have a higher PID, we are the winner
-	s.leaderID = s.nodeID
+	s.setLeader(s.nodeID)
 	s.logger.Infof("set leader as self: %s", s.nodeID)
 
 	// announce ourselves as winner to other nodes
-	s.AnnounceNewLeader(s.leaderID)
+	s.AnnounceNewLeader(s.currentLeader())
 
 	// reset election status
 	s.electionLock.Lock()
@@ -113,7 +112,7 @@ func (s *CacheServer) AnnounceNewLeader(winner string) {
 	s.logger.Infof("Announcing node %s won election", winner)
 
 	// if no response from any higher node IDs, declare self the winner and announce to all
-	for _, node := range s.nodesConfig.Nodes {
+	for _, node := range s.nodeSnapshot() {
 		// skip self
 		if node.Id == s.nodeID {
 			continue
@@ -139,18 +138,18 @@ func (s *CacheServer) AnnounceNewLeader(winner string) {
 func (s *CacheServer) GetLeader(ctx context.Context, request *pb.LeaderRequest) (*pb.LeaderResponse, error) {
 	// while there is no leader, run election
 	for {
-		if s.leaderID != NO_LEADER {
+		if s.currentLeader() != NO_LEADER {
 			break
 		}
 		s.RunElection()
 
 		// if no leader was elected, wait 3 seconds then run another election
-		if s.leaderID == NO_LEADER {
+		if s.currentLeader() == NO_LEADER {
 			s.logger.Info("No leader elected, waiting 3 seconds before trying again...")
 			time.Sleep(3 * time.Second)
 		}
 	}
-	return &pb.LeaderResponse{Id: s.leaderID}, nil
+	return &pb.LeaderResponse{Id: s.currentLeader()}, nil
 }
 
 // Checks if leader is alive every 1 second. If no response for 3 seconds, new election is held.
@@ -164,7 +163,7 @@ func (s *CacheServer) StartLeaderHeartbeatMonitor() {
 		<-ticker.C
 
 		// case 1: we are a follower
-		if s.leaderID != s.nodeID {
+		if s.currentLeader() != s.nodeID {
 			if !s.IsLeaderAlive() {
 				s.logger.Info("Leader heartbeat failed, running new election")
 				s.RunElection()
@@ -182,7 +181,7 @@ func (s *CacheServer) StartLeaderHeartbeatMonitor() {
 			// case 2: we are the leader, so check for any dead nodes and remove them from cluster
 		} else {
 			modified := false
-			for _, node := range s.nodesConfig.Nodes {
+			for _, node := range s.nodeSnapshot() {
 				// skip self
 				if node.Id == s.nodeID {
 					continue
@@ -191,19 +190,18 @@ func (s *CacheServer) StartLeaderHeartbeatMonitor() {
 				c, err := s.NewCacheClient(node.Host, int(node.GrpcPort))
 				if err != nil {
 					s.logger.Infof("error creating grpc client to node node %s: %v", node.Id, err)
-					delete(s.nodesConfig.Nodes, node.Id)
+					s.removeMember(node.Id)
 					modified = true
 					continue
 				}
 
 				ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-				defer cancel()
-
 				s.logger.Infof("Checking health of node %s", node.Id)
 				_, err = c.GetHeartbeat(ctx, &pb.HeartbeatRequest{CallerNodeId: s.nodeID})
+				cancel()
 				if err != nil {
 					s.logger.Infof("Node %s healthcheck returned error, removing from cluster", node.Id)
-					delete(s.nodesConfig.Nodes, node.Id)
+					s.removeMember(node.Id)
 					modified = true
 				}
 			}
@@ -220,19 +218,19 @@ func (s *CacheServer) StartLeaderHeartbeatMonitor() {
 // Check if leader node is alive (3 second timeout)
 func (s *CacheServer) IsLeaderAlive() bool {
 	// make sure leader exists
-	if s.leaderID == NO_LEADER {
+	if s.currentLeader() == NO_LEADER {
 		s.logger.Infof("IsLeaderAlive found leader doesn't exist")
 		return false
 	}
 	// if this node is the leader, return true
-	if s.nodeID == s.leaderID {
+	if s.nodeID == s.currentLeader() {
 		return true
 	}
-	s.logger.Infof("leader is %s", s.leaderID)
-	leader, ok := s.nodesConfig.Nodes[s.leaderID]
+	s.logger.Infof("leader is %s", s.currentLeader())
+	leader, ok := s.nodeSnapshot()[s.currentLeader()]
 	if !ok {
-		s.logger.Infof("leader %s does not exist", s.leaderID)
-		return true
+		s.logger.Infof("leader %s does not exist", s.currentLeader())
+		return false
 	}
 
 	// new identity service client
@@ -257,8 +255,11 @@ func (s *CacheServer) IsLeaderAlive() bool {
 // gRPC handler for updating the leader after
 func (s *CacheServer) UpdateLeader(ctx context.Context, request *pb.NewLeaderAnnouncement) (*pb.GenericResponse, error) {
 	s.logger.Infof("Received announcement leader is %s", request.LeaderId)
-	s.leaderID = request.LeaderId
-	s.decisionChan <- s.leaderID
+	s.setLeader(request.LeaderId)
+	select {
+	case s.decisionChan <- s.currentLeader():
+	default:
+	}
 	return &pb.GenericResponse{Data: SUCCESS}, nil
 }
 
