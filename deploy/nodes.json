@@ -1,0 +1,26 @@
+{
+  "nodes": {
+    "node1": {
+      "id": "node1",
+      "host": "shard1",
+      "rest_port": 8080,
+      "grpc_port": 5005
+    },
+    "node2": {
+      "id": "node2",
+      "host": "shard2",
+      "rest_port": 8080,
+      "grpc_port": 5005
+    },
+    "node3": {
+      "id": "node3",
+      "host": "shard3",
+      "rest_port": 8080,
+      "grpc_port": 5005
+    }
+  },
+  "enable_https": false,
+  "enable_client_auth": false,
+  "server_logfile": "minicache.log",
+  "server_errfile": "minicache.err"
+}
