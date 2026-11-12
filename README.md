@@ -72,16 +72,18 @@ Requires Go 1.23 or newer.
 
 ```sh
 go build ./...
-go test ./lru ./ring ./pkg/... ./cmd/... ./benchmarks/...
-go test -race ./lru ./ring ./pkg/... ./cmd/...
+go test ./lru ./ring ./pkg/... ./cmd/... ./server ./benchmarks/...
+go test -race ./lru ./ring ./pkg/... ./cmd/... ./server
 go vet ./pkg/... ./cmd/...
 go test ./benchmarks -run '^$' -bench . -benchmem
 python benchmarks/load.py --concurrency 1000 --requests 10000
 ```
 
 Core tests cover concurrent LRU access, TTL expiration, virtual-node remapping,
-100 concurrent misses sharing one database read, and write-policy ordering using
-an in-memory storage test double. The local Windows cache-hit benchmark measured
+100 concurrent misses sharing one database read, write-policy ordering using
+an in-memory storage test double, dynamic gateway discovery, gateway failover,
+and live local gRPC Bully election with heartbeat-triggered leader recovery.
+These tests pass with the Go race detector using the installed MSYS2 compiler. The local Windows cache-hit benchmark measured
 70.75 ns/op and zero allocations. This measures memory lookup only.
 
 Docker Engine was unavailable in the local Windows environment. GitHub Actions

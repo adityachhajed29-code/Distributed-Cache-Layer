@@ -39,6 +39,10 @@ const (
 )
 
 type CacheServer struct {
+	connectionMu   sync.Mutex
+	connections    map[string]*grpc.ClientConn
+	closed         bool
+	stopOnce       sync.Once
 	stateMu        sync.RWMutex
 	engine         *invalidation.Engine
 	database       *storage.DB
@@ -127,6 +131,7 @@ func NewCacheServer(capacity int, configFile string, verbose bool, nodeID string
 		clientAuth:   clientAuth,
 		httpsEnabled: httpsEnabled,
 		decisionChan: make(chan string, 1),
+		shutdownChan: make(chan bool),
 	}
 
 	if dsn := os.Getenv("DATABASE_URL"); dsn != "" {
@@ -274,6 +279,15 @@ func (s *CacheServer) Put(ctx context.Context, req *pb.PutRequest) (*empty.Empty
 
 // Utility function to get a new Cache Client which uses gRPC secured with mTLS
 func (s *CacheServer) NewCacheClient(serverHost string, serverPort int) (pb.CacheServiceClient, error) {
+	s.connectionMu.Lock()
+	defer s.connectionMu.Unlock()
+	if s.closed {
+		return nil, fmt.Errorf("server is closed")
+	}
+	address := fmt.Sprintf("%s:%d", serverHost, serverPort)
+	if connection := s.connections[address]; connection != nil {
+		return pb.NewCacheServiceClient(connection), nil
+	}
 
 	var conn *grpc.ClientConn
 	var err error
@@ -313,7 +327,14 @@ func (s *CacheServer) NewCacheClient(serverHost string, serverPort int) (pb.Cach
 		)
 	}
 
-	// set up client
+	// Reuse peer connections across heartbeat and election requests.
+	if err != nil {
+		return nil, err
+	}
+	if s.connections == nil {
+		s.connections = make(map[string]*grpc.ClientConn)
+	}
+	s.connections[address] = conn
 	return pb.NewCacheServiceClient(conn), nil
 }
 
@@ -514,6 +535,13 @@ func NewGrpcClientForNode(node *node.Node, clientAuth bool, httpsEnabled bool) p
 }
 
 func (s *CacheServer) Close(ctx context.Context) error {
+	s.stopOnce.Do(func() { close(s.shutdownChan) })
+	s.connectionMu.Lock()
+	s.closed = true
+	for _, connection := range s.connections {
+		connection.Close()
+	}
+	s.connectionMu.Unlock()
 	if s.engine == nil {
 		return nil
 	}

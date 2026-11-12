@@ -46,6 +46,7 @@ func (s *CacheServer) RunElection() {
 		c, err := s.NewCacheClient(node.Host, int(node.GrpcPort))
 		if err != nil {
 			s.logger.Infof("error creating grpc client to node node %s: %v", node.Id, err)
+			continue
 		}
 		res, err := c.GetPid(ctx, &pb.PidRequest{CallerPid: localPID})
 		if err != nil {
@@ -124,6 +125,7 @@ func (s *CacheServer) AnnounceNewLeader(winner string) {
 		c, err := s.NewCacheClient(node.Host, int(node.GrpcPort))
 		if err != nil {
 			s.logger.Infof("error creating grpc client to node node %s: %v", node.Id, err)
+			continue
 		}
 
 		_, err = c.UpdateLeader(ctx, &pb.NewLeaderAnnouncement{LeaderId: winner})
@@ -158,9 +160,14 @@ func (s *CacheServer) StartLeaderHeartbeatMonitor() {
 	s.logger.Info("Leader heartbeat monitor starting...")
 
 	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
 	for {
 		// run heartbeat check every 1 second
-		<-ticker.C
+		select {
+		case <-s.shutdownChan:
+			return
+		case <-ticker.C:
+		}
 
 		// case 1: we are a follower
 		if s.currentLeader() != s.nodeID {
@@ -173,7 +180,7 @@ func (s *CacheServer) StartLeaderHeartbeatMonitor() {
 			select {
 			case <-s.shutdownChan:
 				s.logger.Info("Received shutdown signal")
-				break
+				return
 			case <-time.After(time.Second):
 				continue
 			}
