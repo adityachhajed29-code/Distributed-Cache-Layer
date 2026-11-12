@@ -16,9 +16,11 @@ import (
 
 	empty "github.com/golang/protobuf/ptypes/empty"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/keepalive"
 	"google.golang.org/grpc/reflection"
+	"google.golang.org/grpc/status"
 
 	"github.com/malwaredllc/minicache/lru"
 	"github.com/malwaredllc/minicache/node"
@@ -237,9 +239,13 @@ func (s *CacheServer) RunAndReturnHTTPServer(port int) *http.Server {
 		tlsConfig, _ = LoadTlsConfig(s.clientAuth)
 	}
 	srv := &http.Server{
-		Addr:      addr,
-		Handler:   s.router,
-		TLSConfig: tlsConfig,
+		Addr:              addr,
+		Handler:           s.router,
+		TLSConfig:         tlsConfig,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      10 * time.Second,
+		IdleTimeout:       60 * time.Second,
 	}
 
 	// run in background
@@ -262,6 +268,14 @@ func (s *CacheServer) RunAndReturnHTTPServer(port int) *http.Server {
 
 // gRPC handler for getting item from cache. Any replica in the group can serve read requests.
 func (s *CacheServer) Get(ctx context.Context, req *pb.GetRequest) (*pb.GetResponse, error) {
+	if req == nil {
+		return nil, status.Error(codes.InvalidArgument, "request required")
+	}
+	key, err := invalidation.NormalizeKey(req.Key)
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	req = &pb.GetRequest{Key: key}
 	value, err := s.read(ctx, req.Key)
 	if err != nil {
 		return &pb.GetResponse{Data: "key not found"}, nil
@@ -271,6 +285,17 @@ func (s *CacheServer) Get(ctx context.Context, req *pb.GetRequest) (*pb.GetRespo
 
 // gRPC handler for putting item in cache.
 func (s *CacheServer) Put(ctx context.Context, req *pb.PutRequest) (*empty.Empty, error) {
+	if req == nil {
+		return nil, status.Error(codes.InvalidArgument, "request required")
+	}
+	key, err := invalidation.NormalizeKey(req.Key)
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	if len(req.Value) > 512*1024 {
+		return nil, status.Error(codes.ResourceExhausted, "payload exceeds 512 KiB")
+	}
+	req = &pb.PutRequest{Key: key, Value: req.Value}
 	if err := s.write(ctx, req.Key, req.Value); err != nil {
 		return nil, err
 	}

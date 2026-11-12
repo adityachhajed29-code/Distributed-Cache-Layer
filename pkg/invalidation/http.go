@@ -14,6 +14,15 @@ import (
 
 var keyPattern = regexp.MustCompile(`^[a-z0-9:_-]{1,250}$`)
 
+// NormalizeKey applies the same key rules to every persistence entry point.
+func NormalizeKey(key string) (string, error) {
+	key = strings.ToLower(key)
+	if !keyPattern.MatchString(key) {
+		return "", errors.New("invalid key")
+	}
+	return key, nil
+}
+
 // Handler serves JSON granules, with base64-encoded binary values.
 func (e *Engine) Handler(w http.ResponseWriter, r *http.Request) {
 	key := strings.ToLower(strings.TrimPrefix(r.URL.Path, "/v1/cache/"))

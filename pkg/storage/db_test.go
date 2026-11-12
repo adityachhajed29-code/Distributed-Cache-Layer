@@ -34,6 +34,24 @@ func TestPostgresPersistence(t *testing.T) {
 	if err != nil || string(actual.Val) != "new" {
 		t.Fatalf("read failed %+v %v", actual, err)
 	}
+	operation := Record{Key: key, Val: []byte("once"), OperationID: key + ":operation"}
+	first, err := db.Write(ctx, operation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.ExecContext(ctx, "DELETE FROM cache_write_receipts WHERE operation_id=$1", operation.OperationID)
+	newer, err := db.Write(ctx, Record{Key: key, Val: []byte("latest")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	replay, err := db.Write(ctx, operation)
+	if err != nil || replay.Version != first.Version {
+		t.Fatalf("retry changed version: %+v %v", replay, err)
+	}
+	current, err := db.Get(ctx, key)
+	if err != nil || current.Version != newer.Version || string(current.Val) != "latest" {
+		t.Fatalf("replay overwrote newer data: %+v %v", current, err)
+	}
 	if _, err = db.Write(ctx, Record{Key: key, Deleted: true}); err != nil {
 		t.Fatal(err)
 	}

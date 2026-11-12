@@ -21,7 +21,9 @@ def read(_):
     start = time.perf_counter()
     try:
         with urllib.request.urlopen(args.url, timeout=10) as response:
-            response.read()
+            payload = json.loads(response.read())
+            if payload.get("val") != "dmFsdWU=":
+                return None
         return (time.perf_counter() - start) * 1000
     except Exception:
         return None
@@ -35,3 +37,6 @@ report = {'requests': args.requests, 'errors': args.requests - len(latencies), '
 for percentile in (50, 95, 99):
     report[f'p{percentile}_ms'] = latencies[max(0, math.ceil(len(latencies) * percentile / 100) - 1)] if latencies else None
 print(json.dumps(report, indent=2))
+
+if report["errors"]:
+    raise SystemExit(1)

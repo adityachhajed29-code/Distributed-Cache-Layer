@@ -49,8 +49,10 @@ Write-through commits PostgreSQL before updating memory. Those two operations do
 not form a single atomic transaction. Write-behind acknowledges volatile queued
 writes with HTTP 202 and provisional version 0. The database assigns the committed
 version during flushing. A full queue returns 503. Abrupt shard loss can lose
-unflushed writes. Retries following an ambiguous database commit can increment a
-version again. Cross-shard concurrent writes are resolved by database commit order.
+unflushed writes. Each accepted write carries a unique operation ID. PostgreSQL
+records the committed result transactionally, so a retry returns the original
+version without overwriting later writes. Write receipts are retained to preserve
+retry deduplication. Cross-shard concurrent writes are resolved by database commit order.
 
 Cache coherence is bounded by TTL during ownership changes. Existing cached copies
 are not invalidated across the entire cluster. There is no cross-shard replication,
@@ -63,8 +65,9 @@ Failover converges after health polling, so in-flight requests can fail during a
 transition. The client-facing proxy remains the deployment entry point.
 
 The new JSON API is the supported interface for TTL and provenance. The inherited
-HTTP/gRPC interface retains its original string payload behavior. Production-grade
-hardening of all inherited transport paths remains pending.
+HTTP/gRPC interface retains its original string payload behavior. Persistence
+entry points enforce common key and value limits, gRPC validates requests, and
+HTTP servers bound header, read, write, and idle timeouts.
 
 ## Verify
 
@@ -87,8 +90,9 @@ These tests pass with the Go race detector using the installed MSYS2 compiler. T
 70.75 ns/op and zero allocations. This measures memory lookup only.
 
 Docker Engine was unavailable in the local Windows environment. GitHub Actions
-runs race checks, real PostgreSQL integration, Compose startup, coordinator and
-shard failure/recovery checks, and the HTTP load generator. Inspect the latest
+runs a matrix covering all three write policies with race checks, real PostgreSQL
+integration, Compose startup, coordinator and shard failure/recovery checks, and
+the HTTP load generator. Load tests verify response values and fail on any errors. Inspect the latest
 workflow result for the validation status of a given commit.
 The performance figures in the supplied lab report have not been reproduced.
 The original root integration suite requires generated TLS certificates and is

@@ -2,6 +2,7 @@ package invalidation
 
 import (
 	"context"
+	cryptorand "crypto/rand"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
@@ -102,6 +103,11 @@ func (e *Engine) save(g Granule) {
 }
 
 func (e *Engine) Get(ctx context.Context, key string) (Granule, error) {
+	normalized, err := NormalizeKey(key)
+	if err != nil {
+		return Granule{}, err
+	}
+	key = normalized
 	if g, ok := e.cached(key); ok {
 		if g.Deleted {
 			return Granule{}, sql.ErrNoRows
@@ -161,6 +167,17 @@ func (e *Engine) load(ctx context.Context, key string, force bool) (Granule, err
 }
 
 func (e *Engine) Write(ctx context.Context, r storage.Record, ttl time.Duration) (Granule, error) {
+	key, err := NormalizeKey(r.Key)
+	if err != nil {
+		return Granule{}, err
+	}
+	r.Key = key
+	if len(r.Val) > 512*1024 {
+		return Granule{}, errors.New("payload exceeds 512 KiB")
+	}
+	if ttl > 365*24*time.Hour {
+		return Granule{}, errors.New("TTL exceeds 365 days")
+	}
 	e.lifecycle.RLock()
 	defer e.lifecycle.RUnlock()
 	if e.closed {
@@ -173,6 +190,11 @@ func (e *Engine) Write(ctx context.Context, r storage.Record, ttl time.Duration)
 		return Granule{}, errors.New("TTL must be positive")
 	}
 	r.Val = append([]byte(nil), r.Val...)
+	var operation [16]byte
+	if _, err := cryptorand.Read(operation[:]); err != nil {
+		return Granule{}, err
+	}
+	r.OperationID = hex.EncodeToString(operation[:])
 	lock := e.lock(r.Key)
 	lock.Lock()
 	defer lock.Unlock()
