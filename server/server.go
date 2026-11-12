@@ -150,6 +150,13 @@ func NewCacheServer(capacity int, configFile string, verbose bool, nodeID string
 		cacheServer.router.Any("/v1/cache/*key", gin.WrapF(engine.Handler))
 	}
 	cacheServer.router.GET("/health", func(c *gin.Context) { c.Status(http.StatusOK) })
+	cacheServer.router.GET("/members", func(c *gin.Context) {
+		members := []string{}
+		for _, member := range cacheServer.nodeSnapshot() {
+			members = append(members, fmt.Sprintf("http://%s:%d", member.Host, member.RestPort))
+		}
+		c.JSON(http.StatusOK, members)
+	})
 	cacheServer.router.GET("/get/:key", cacheServer.GetHandler)
 	cacheServer.router.POST("/put", cacheServer.PutHandler)
 	var grpcServer *grpc.Server

@@ -3,11 +3,31 @@ on: [push, pull_request]
 jobs:
   build:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: cache
+          POSTGRES_PASSWORD: cache
+          POSTGRES_DB: cache
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U cache"
+          --health-interval 2s --health-timeout 2s --health-retries 20
+    env:
+      TEST_DATABASE_URL: postgres://cache:cache@localhost:5432/cache?sslmode=disable
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version: '1.23'
       - run: go build ./...
-      - run: go test -race ./lru ./ring ./pkg/... ./benchmarks/...
+      - run: go test -race ./lru ./ring ./pkg/... ./cmd/... ./benchmarks/...
       - run: go vet ./pkg/... ./cmd/...
+      - run: docker compose -f deploy/compose.yml up --build -d
+      - run: python3 deploy/smoke.py
+      - run: python3 benchmarks/load.py --requests 2000 --concurrency 100
+      - if: always()
+        run: docker compose -f deploy/compose.yml logs --tail=100
+      - if: always()
+        run: docker compose -f deploy/compose.yml down -v

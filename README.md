@@ -16,8 +16,8 @@ curl http://localhost:8081/v1/cache/demo
 curl -X DELETE http://localhost:8081/v1/cache/demo
 ```
 
-The deployment contains PostgreSQL, three shards, a coordinator gateway on port
-8080, and a client-facing proxy on port 8081. Set WRITE_POLICY to cache-aside,
+The deployment contains PostgreSQL, three shards, a primary coordinator gateway on port
+8080, a standby coordinator, and a client-facing proxy on port 8081. Set WRITE_POLICY to cache-aside,
 write-through, or write-behind before starting Compose. Default is write-through.
 The supplied database credentials are for local demonstration.
 
@@ -55,10 +55,12 @@ version again. Cross-shard concurrent writes are resolved by database commit ord
 Cache coherence is bounded by TTL during ownership changes. Existing cached copies
 are not invalidated across the entire cluster. There is no cross-shard replication,
 quorum fencing, durable write queue, or network-partition consistency guarantee.
-Bully election handles the inherited shard membership coordinator. The HTTP gateway
-is a separate configured service, and automatic gateway failover is pending.
-Gateway routing probes configured shard endpoints and does not automatically add
-new endpoints discovered by the inherited membership protocol.
+Bully election handles the inherited shard membership coordinator. The HTTP gateways
+are replicated as primary and standby services. The client proxy health-checks
+both and routes through surviving coordinators. Each gateway discovers additional
+shards from the membership endpoint and probes known endpoints for recovery.
+Failover converges after health polling, so in-flight requests can fail during a
+transition. The client-facing proxy remains the deployment entry point.
 
 The new JSON API is the supported interface for TTL and provenance. The inherited
 HTTP/gRPC interface retains its original string payload behavior. Production-grade
@@ -70,8 +72,8 @@ Requires Go 1.23 or newer.
 
 ```sh
 go build ./...
-go test ./lru ./ring ./pkg/... ./benchmarks/...
-go test -race ./lru ./ring ./pkg/...
+go test ./lru ./ring ./pkg/... ./cmd/... ./benchmarks/...
+go test -race ./lru ./ring ./pkg/... ./cmd/...
 go vet ./pkg/... ./cmd/...
 go test ./benchmarks -run '^$' -bench . -benchmem
 python benchmarks/load.py --concurrency 1000 --requests 10000
@@ -82,8 +84,10 @@ Core tests cover concurrent LRU access, TTL expiration, virtual-node remapping,
 an in-memory storage test double. The local Windows cache-hit benchmark measured
 70.75 ns/op and zero allocations. This measures memory lookup only.
 
-Docker Engine was unavailable during development. Container startup, live
-PostgreSQL behavior, cluster failover, and end-to-end latency remain unverified.
+Docker Engine was unavailable in the local Windows environment. GitHub Actions
+runs race checks, real PostgreSQL integration, Compose startup, coordinator and
+shard failure/recovery checks, and the HTTP load generator. Inspect the latest
+workflow result for the validation status of a given commit.
 The performance figures in the supplied lab report have not been reproduced.
 The original root integration suite requires generated TLS certificates and is
 not included in the core verification command above.

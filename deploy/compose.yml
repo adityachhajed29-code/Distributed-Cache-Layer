@@ -42,14 +42,23 @@ services:
       SHARDS: http://shard1:8080,http://shard2:8080,http://shard3:8080
     ports: ["8080:8080"]
     depends_on: [shard1, shard2, shard3]
+  coordinator-backup:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    entrypoint: ["/app/gateway"]
+    environment:
+      SHARDS: http://shard1:8080,http://shard2:8080,http://shard3:8080
+    depends_on: [shard1, shard2, shard3]
   client:
     build:
       context: ..
       dockerfile: deploy/Dockerfile
     entrypoint: ["/app/gateway"]
     environment:
-      SHARDS: http://coordinator:8080
+      SHARDS: http://coordinator:8080,http://coordinator-backup:8080
+      DISCOVER_MEMBERS: "false"
     ports: ["8081:8080"]
-    depends_on: [coordinator]
+    depends_on: [coordinator, coordinator-backup]
 volumes:
   postgres-data:
