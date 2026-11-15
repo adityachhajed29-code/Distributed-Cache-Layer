@@ -35,14 +35,30 @@ func Open(ctx context.Context, dsn string) (*DB, error) {
 		db.Close()
 		return nil, err
 	}
-	_, err = db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS cache_records (
- key TEXT PRIMARY KEY, val BYTEA NOT NULL, version BIGINT NOT NULL DEFAULT 1,
- deleted BOOLEAN NOT NULL DEFAULT FALSE, updated_at TIMESTAMPTZ NOT NULL DEFAULT now());
- CREATE TABLE IF NOT EXISTS cache_write_receipts (operation_id TEXT PRIMARY KEY, record JSONB NOT NULL)`)
+
+	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		db.Close()
 		return nil, err
 	}
+	// Serialize first-start schema creation across all cache shards.
+	_, err = tx.ExecContext(ctx, "SELECT pg_advisory_xact_lock(731284906)")
+	if err == nil {
+		_, err = tx.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS cache_records (
+ key TEXT PRIMARY KEY, val BYTEA NOT NULL, version BIGINT NOT NULL DEFAULT 1,
+ deleted BOOLEAN NOT NULL DEFAULT FALSE, updated_at TIMESTAMPTZ NOT NULL DEFAULT now());
+ CREATE TABLE IF NOT EXISTS cache_write_receipts (operation_id TEXT PRIMARY KEY, record JSONB NOT NULL)`)
+	}
+	if err != nil {
+		tx.Rollback()
+		db.Close()
+		return nil, err
+	}
+	if err = tx.Commit(); err != nil {
+		db.Close()
+		return nil, err
+	}
+
 	return &DB{db}, nil
 }
 

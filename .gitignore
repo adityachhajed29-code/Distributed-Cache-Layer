@@ -23,3 +23,6 @@ minicache
 
 *.log
 *.err
+
+# Local Windows runtime, database, credentials, and build cache
+.local/

@@ -16,6 +16,9 @@ import (
 
 func main() {
 	// parse arguments
+	nodeID := flag.String("node_id", server.DYNAMIC, "explicit cluster node ID")
+	stopFile := flag.String("stop_file", "", "optional file whose creation requests graceful shutdown")
+	bindHost := flag.String("bind_host", "", "network address to bind")
 	grpcPort := flag.Int("grpc_port", 5005, "port number for gRPC server to listen on")
 	capacity := flag.Int("capacity", 1000, "capacity of LRU cache")
 	clientAuth := flag.Bool("enable_client_auth", true, "require client authentication (used for mTLS)")
@@ -27,7 +30,7 @@ func main() {
 	flag.Parse()
 
 	// set up listener TCP connectiion
-	listener, err := net.Listen("tcp", fmt.Sprintf(":%d", *grpcPort))
+	listener, err := net.Listen("tcp", net.JoinHostPort(*bindHost, fmt.Sprint(*grpcPort)))
 	if err != nil {
 		panic(err)
 	}
@@ -37,7 +40,7 @@ func main() {
 		*capacity,
 		*configFile,
 		*verbose,
-		server.DYNAMIC,
+		*nodeID,
 		*httpsEnabled,
 		*clientAuth,
 	)
@@ -62,6 +65,17 @@ func main() {
 	// set up shutdown handler and block until sigint or sigterm received
 	c := make(chan os.Signal, 1)
 	signal.Notify(c, os.Interrupt, syscall.SIGTERM, syscall.SIGINT)
+	if *stopFile != "" {
+		go func() {
+			for {
+				if _, err := os.Stat(*stopFile); err == nil {
+					c <- os.Interrupt
+					return
+				}
+				time.Sleep(200 * time.Millisecond)
+			}
+		}()
+	}
 	go func() {
 		<-c
 

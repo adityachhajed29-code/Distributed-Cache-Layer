@@ -233,7 +233,7 @@ func (s *CacheServer) write(ctx context.Context, key, value string) error {
 
 func (s *CacheServer) RunAndReturnHTTPServer(port int) *http.Server {
 	// setup http server
-	addr := fmt.Sprintf(":%d", port)
+	addr := net.JoinHostPort(os.Getenv("BIND_HOST"), fmt.Sprint(port))
 	var tlsConfig *tls.Config
 	if s.httpsEnabled {
 		tlsConfig, _ = LoadTlsConfig(s.clientAuth)

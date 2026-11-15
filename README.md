@@ -5,6 +5,42 @@ See [reconstructed history](docs/HISTORY.md) for the explicitly labeled August 2
 through November 10, 2026 commits and team attribution. This reconstruction was
 created on November 12, 2026.
 
+## Run on Windows without Docker
+
+Double-click `run-local.cmd` to start, and `stop-local.cmd` to stop.
+Alternatively, open PowerShell in the repository and run:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\start-local.ps1
+```
+
+The first run downloads portable Go (if unavailable) and PostgreSQL from their
+publishers, builds the project, initializes a password-protected PostgreSQL
+instance, starts six Go services, and performs a save/read demonstration. It uses
+only the project-local `.local` directory and binds services to `127.0.0.1`.
+No Windows service registration or system PATH change is required. Keep `.local`
+private because it contains database data and the generated local database password.
+
+Open http://localhost:8081/v1/cache/demo:windows for the saved JSON response.
+
+```powershell
+# Repeat the demo
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\demo-local.ps1
+# Stop gracefully, preserving PostgreSQL data
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\stop-local.ps1
+# Choose another policy after stopping
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\start-local.ps1 -Policy write-behind
+```
+
+Ports are PostgreSQL 55432, shard HTTP 8101-8103, shard gRPC 5101-5103,
+coordinators 8080 and 8082, and client proxy 8081. Startup reports occupied ports
+rather than stopping unrelated programs. Logs are under `.local/logs`.
+A repeated start requires stopping the recorded run first. Database files survive
+both shutdown and restart. Use `-GoExe C:\path\to\go.exe` to select an existing toolchain.
+
+PostgreSQL binaries are distributed by EDB via the official PostgreSQL Windows
+download page: https://www.postgresql.org/download/windows/.
+
 ## Run
 
 Requires Docker Engine and Compose.
