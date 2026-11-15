@@ -45,18 +45,16 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: '1.23'
-      - name: Start without Docker
-        shell: pwsh
-        run: ./scripts/start-local.ps1 -Policy write-behind
-      - name: Verify persistence across restart
+      - name: Verify Docker-free startup and restart persistence
         shell: pwsh
         run: |
-          Invoke-RestMethod -Method Put -Uri 'http://127.0.0.1:8081/v1/cache/restart:check' -ContentType 'application/json' -Body '{"val":"cGVyc2lzdGVk"}'
-          ./scripts/stop-local.ps1
-          ./scripts/start-local.ps1 -Policy write-behind
-          $record = Invoke-RestMethod 'http://127.0.0.1:8081/v1/cache/restart:check'
-          if ($record.val -ne 'cGVyc2lzdGVk') { throw 'Persistent value was lost' }
-      - name: Stop without Docker
-        if: always()
-        shell: pwsh
-        run: ./scripts/stop-local.ps1
+          try {
+            ./scripts/start-local.ps1 -Policy write-behind
+            Invoke-RestMethod -Method Put -Uri 'http://127.0.0.1:8081/v1/cache/restart:check' -ContentType 'application/json' -Body '{"val":"cGVyc2lzdGVk"}'
+            ./scripts/stop-local.ps1
+            ./scripts/start-local.ps1 -Policy write-behind
+            $record = Invoke-RestMethod 'http://127.0.0.1:8081/v1/cache/restart:check'
+            if ($record.val -ne 'cGVyc2lzdGVk') { throw 'Persistent value was lost' }
+          } finally {
+            ./scripts/stop-local.ps1
+          }

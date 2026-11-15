@@ -8,6 +8,8 @@ created on November 12, 2026.
 ## Run on Windows without Docker
 
 Double-click `run-local.cmd` to start, and `stop-local.cmd` to stop.
+Keep the launcher window open while using the project. The stop launcher drains
+writes and stops the database gracefully.
 Alternatively, open PowerShell in the repository and run:
 
 ```powershell

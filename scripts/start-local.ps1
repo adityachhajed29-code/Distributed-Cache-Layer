@@ -1,7 +1,8 @@
 param(
     [ValidateSet('cache-aside', 'write-through', 'write-behind')]
     [string]$Policy = 'write-through',
-    [string]$GoExe = ''
+    [string]$GoExe = '',
+    [switch]$Wait
 )
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
@@ -129,6 +130,16 @@ try {
     if (!$ready) { throw 'Services did not become healthy within 90 seconds. Check .local\logs.' }
     Write-Host "Project ready with $Policy at http://localhost:8081"
     & (Join-Path $PSScriptRoot 'demo-local.ps1')
+    if ($Wait) {
+        Write-Host 'Keep this window open. Use stop-local.cmd to stop the project gracefully.'
+        do {
+            Start-Sleep -Seconds 1
+            $running = @($processes | Where-Object {
+                $process = Get-Process -Id $_.Id -ErrorAction SilentlyContinue
+                $process -and $process.StartTime.ToUniversalTime().Ticks -eq [long]$_.StartTicks
+            })
+        } while ($running.Count -gt 0)
+    }
 } catch {
     Write-Warning $_
     & (Join-Path $PSScriptRoot 'stop-local.ps1')
